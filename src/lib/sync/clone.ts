@@ -3,11 +3,11 @@
  *
  * Flow: pick a collision-free subfolder under the chosen parent -> create an
  * empty local project there (createAndOpenProject opens it + records recents +
- * switches to the workbench) -> link it to the pack -> pull the head revision
- * (skipped for empty packs at headRevision 0, which have no manifest yet).
+ * switches to the workbench) -> link it to the pack -> materialize the
+ * authoritative live workspace, including every referenced binary asset.
  *
- * A failing pull leaves the (already opened + linked) project in place so the
- * user can retry "Neueste Version laden" — the local project is never deleted.
+ * A failing live bootstrap leaves the (already opened + linked) project in
+ * place so the user can retry — the local project is never deleted.
  * All thrown errors carry German user-facing messages.
  */
 
@@ -29,8 +29,8 @@ async function resolveCloneDir(parentDir: string, name: string): Promise<string>
 }
 
 /**
- * Clones `pack` into a new subfolder of `parentDir`, opens it and pulls the
- * head revision. Returns the absolute project directory of the clone.
+ * Clones `pack` into a new subfolder of `parentDir`, opens it and loads the
+ * current live workspace. Returns the absolute project directory of the clone.
  */
 export async function clonePackToLocal(
   pack: Pack,

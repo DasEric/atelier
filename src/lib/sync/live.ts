@@ -22,6 +22,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
 import { baseName } from "@/lib/format";
+import i18n from "@/lib/i18n";
 import { ASSETS_DIR_NAME, CACHE_DIR_NAME, joinPath, saveProject } from "@/lib/project/io";
 import {
   PROJECT_FILE_VERSION,
@@ -48,7 +49,7 @@ import {
   type WorkspaceProject,
   type WorkspaceTattoo,
 } from "./api-client";
-import { pullProject, uploadLocalAsset } from "./pack-sync";
+import { pullProject, uploadLocalAsset, type ProgressFn } from "./pack-sync";
 import {
   collectLocalAssets,
   fromRevisionDrawable,
@@ -518,25 +519,53 @@ export function diffWorkspaceProjects(
   return operations.length === 1 ? operations[0]! : { kind: "batch", operations };
 }
 
-async function ensureProjectAssetsUploaded(project: AtelierProject): Promise<void> {
+function liveProgress(direction: "push" | "pull"): ProgressFn {
+  return (progress) => useLiveStore.getState().setTransfer({ direction, progress });
+}
+
+async function ensureProjectAssetsUploaded(
+  project: AtelierProject,
+  onProgress: ProgressFn = () => {},
+): Promise<void> {
   const { projectDir } = useProjectStore.getState();
   if (!projectDir) throw new Error("Kein Projektordner geöffnet.");
   const assets = collectLocalAssets(project);
   const hashes = [...assets.keys()].filter((hash) => !knownServerAssets.has(hash));
   const missing: string[] = [];
+  const checkTotal = Math.max(1, Math.ceil(hashes.length / ASSET_CHECK_BATCH));
+  onProgress({
+    phase: "check",
+    current: hashes.length === 0 ? 1 : 0,
+    total: checkTotal,
+    label:
+      hashes.length === 0
+        ? i18n.t("sync:progress.allLocal")
+        : i18n.t("sync:progress.checking"),
+  });
   for (let index = 0; index < hashes.length; index += ASSET_CHECK_BATCH) {
     const result = await checkAssets(hashes.slice(index, index + ASSET_CHECK_BATCH));
     missing.push(...result.missing);
     result.present.forEach((hash) => knownServerAssets.add(hash));
+    onProgress({
+      phase: "check",
+      current: Math.floor(index / ASSET_CHECK_BATCH) + 1,
+      total: checkTotal,
+      label: i18n.t("sync:progress.checking"),
+    });
   }
   let cursor = 0;
+  let completed = 0;
   const uploadNext = async (): Promise<void> => {
     while (cursor < missing.length) {
       const hash = missing[cursor++]!;
       const asset = assets.get(hash);
       if (asset) {
+        const label = baseName(asset.ref.path);
+        onProgress({ phase: "upload", current: completed, total: missing.length, label });
         await uploadLocalAsset(projectDir, asset);
         knownServerAssets.add(hash);
+        completed += 1;
+        onProgress({ phase: "upload", current: completed, total: missing.length, label });
       }
     }
   };
@@ -546,6 +575,14 @@ async function ensureProjectAssetsUploaded(project: AtelierProject): Promise<voi
       () => uploadNext(),
     ),
   );
+  if (missing.length === 0) {
+    onProgress({
+      phase: "upload",
+      current: 1,
+      total: 1,
+      label: i18n.t("sync:progress.allLocal"),
+    });
+  }
 }
 
 async function localPathMap(
@@ -600,12 +637,28 @@ async function ensureRemoteAssets(
   current: AtelierProject,
   projectDir: string,
   trustCurrentRefs = false,
+  onProgress: ProgressFn = () => {},
 ): Promise<Map<string, string>> {
   const paths = await localPathMap(current, projectDir, trustCurrentRefs);
   const missingAssets = allRemoteAssets(cloud).filter((asset) => !paths.has(asset.sha256));
-  if (missingAssets.length === 0) return paths;
+  if (missingAssets.length === 0) {
+    onProgress({
+      phase: "download",
+      current: 1,
+      total: 1,
+      label: i18n.t("sync:progress.allLocal"),
+    });
+    return paths;
+  }
+  onProgress({
+    phase: "download",
+    current: 0,
+    total: missingAssets.length,
+    label: i18n.t("sync:progress.downloadStarting"),
+  });
   const cloudDir = joinPath(projectDir, ASSETS_DIR_NAME, ".cloud");
   await mkdir(cloudDir, { recursive: true });
+  let completed = 0;
   const materialize = async (asset: RevisionAssetRef): Promise<void> => {
     const safeName = sanitizeExportName(asset.exportName, asset.sha256);
     const relPath = `${ASSETS_DIR_NAME}/.cloud/${asset.sha256.slice(0, 16)}-${safeName}`;
@@ -614,9 +667,22 @@ async function ensureRemoteAssets(
       const bytes = await readFile(absPath);
       if ((await sha256Hex(bytes)) === asset.sha256) {
         paths.set(asset.sha256, relPath);
+        completed += 1;
+        onProgress({
+          phase: "download",
+          current: completed,
+          total: missingAssets.length,
+          label: safeName,
+        });
         return;
       }
     }
+    onProgress({
+      phase: "download",
+      current: completed,
+      total: missingAssets.length,
+      label: safeName,
+    });
     const bytes = await downloadAsset(asset.sha256);
     if ((await sha256Hex(bytes)) !== asset.sha256) {
       throw new Error(`Cloud-Datei ${safeName} ist beschädigt.`);
@@ -629,6 +695,13 @@ async function ensureRemoteAssets(
       await remove(tmpPath).catch(() => {});
     }
     paths.set(asset.sha256, relPath);
+    completed += 1;
+    onProgress({
+      phase: "download",
+      current: completed,
+      total: missingAssets.length,
+      label: safeName,
+    });
   };
   let cursor = 0;
   const downloadNext = async (): Promise<void> => {
@@ -649,6 +722,7 @@ async function materializeWorkspace(
   workspace: LiveWorkspace,
   overlayPending = true,
   trustCurrentRefs = false,
+  onProgress: ProgressFn = () => {},
 ): Promise<AtelierProject> {
   const initialState = useProjectStore.getState();
   if (!initialState.project || !initialState.projectDir) {
@@ -674,7 +748,7 @@ async function materializeWorkspace(
   // introduced binary before replacing the store, otherwise that edit could
   // be overwritten by the older snapshot.
   while (true) {
-    paths = await ensureRemoteAssets(cloud, current, projectDir, trustCurrentRefs);
+    paths = await ensureRemoteAssets(cloud, current, projectDir, trustCurrentRefs, onProgress);
     const latestState = useProjectStore.getState();
     if (!latestState.project) throw new Error("Kein Projekt geöffnet.");
     current = latestState.project;
@@ -721,11 +795,12 @@ async function materializeWorkspace(
 async function applyAuthoritativeWorkspace(
   workspace: LiveWorkspace,
   trustCurrentRefs = false,
+  onProgress: ProgressFn = () => {},
 ): Promise<void> {
   if (workspace.packId !== targetPackId || !targetSessionIsCurrent(workspace.packId)) return;
   const beforeVersion = useLiveStore.getState().version;
   if (beforeVersion !== null && workspace.version < beforeVersion) return;
-  const local = await materializeWorkspace(workspace, true, trustCurrentRefs);
+  const local = await materializeWorkspace(workspace, true, trustCurrentRefs, onProgress);
   if (workspace.packId !== targetPackId || !targetSessionIsCurrent(workspace.packId)) return;
   const latestVersion = useLiveStore.getState().version;
   if (latestVersion !== null && workspace.version < latestVersion) return;
@@ -752,12 +827,13 @@ async function applyAuthoritativeWorkspace(
   useLiveStore.getState().setVersion(workspace.version);
 }
 
-async function fetchAndApplyWorkspace(): Promise<void> {
+async function fetchAndApplyWorkspace(onProgress: ProgressFn = () => {}): Promise<number | null> {
   const packId = targetPackId;
-  if (!packId) return;
+  if (!packId) return null;
   const workspace = await getWorkspace(packId);
-  await applyAuthoritativeWorkspace(workspace);
+  await applyAuthoritativeWorkspace(workspace, false, onProgress);
   if (targetPackId === packId) useLiveStore.getState().setStatus("online");
+  return workspace.version;
 }
 
 function scheduleResync(): void {
@@ -1016,40 +1092,64 @@ async function bootstrapWorkspace(packId: string): Promise<void> {
     targetSessionKey === expectedSessionKey &&
     targetSessionIsCurrent(packId);
   useLiveStore.getState().setStatus("syncing");
-  let project = useProjectStore.getState().project;
-  if (!project || project.sync.remoteProjectId !== packId) return;
-  await restorePendingQueue(packId);
-  if (!stillCurrent()) return;
+  const reportPull = liveProgress("pull");
+  const reportPush = liveProgress("push");
+  reportPull({
+    phase: "download",
+    current: 0,
+    total: 1,
+    label: i18n.t("sync:progress.workspaceLoading"),
+  });
   try {
-    const existing = await getWorkspace(packId);
+    let project = useProjectStore.getState().project;
+    if (!project || project.sync.remoteProjectId !== packId) return;
+    await restorePendingQueue(packId);
     if (!stillCurrent()) return;
-    await applyAuthoritativeWorkspace(existing);
-  } catch (error) {
-    if (!(error instanceof ApiError) || error.status !== 404) throw error;
-    if (!stillCurrent()) return;
-    const pack = await getPack(packId);
-    if (!stillCurrent()) return;
-    if (pack.headRevision > 0 && project.sync.baseRevision !== pack.headRevision) {
-      await pullProject();
+    try {
+      const existing = await getWorkspace(packId);
       if (!stillCurrent()) return;
-      project = useProjectStore.getState().project;
-      if (!project) return;
+      await applyAuthoritativeWorkspace(existing, false, reportPull);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 404) throw error;
+      if (!stillCurrent()) return;
+      const pack = await getPack(packId);
+      if (!stillCurrent()) return;
+      if (pack.headRevision > 0 && project.sync.baseRevision !== pack.headRevision) {
+        await pullProject({ onProgress: reportPull });
+        if (!stillCurrent()) return;
+        project = useProjectStore.getState().project;
+        if (!project) return;
+      }
+      await ensureProjectAssetsUploaded(project, reportPush);
+      if (!stillCurrent()) return;
+      reportPush({
+        phase: "commit",
+        current: 0,
+        total: 1,
+        label: i18n.t("sync:progress.workspaceInitializing"),
+      });
+      const initialized = await initializeWorkspace(
+        packId,
+        toWorkspaceProject(project),
+        pack.headRevision,
+      );
+      if (!stillCurrent()) return;
+      reportPush({
+        phase: "commit",
+        current: 1,
+        total: 1,
+        label: i18n.t("sync:progress.done"),
+      });
+      await applyAuthoritativeWorkspace(initialized);
     }
-    await ensureProjectAssetsUploaded(project);
-    if (!stillCurrent()) return;
-    const initialized = await initializeWorkspace(
-      packId,
-      toWorkspaceProject(project),
-      pack.headRevision,
-    );
-    if (!stillCurrent()) return;
-    await applyAuthoritativeWorkspace(initialized);
-  }
-  if (stillCurrent()) {
-    useLiveStore.getState().setStatus("online");
-    for (const item of pendingOperations) {
-      sendChain = sendChain.then(() => sendPending(item)).catch(() => {});
+    if (stillCurrent()) {
+      useLiveStore.getState().setStatus("online");
+      for (const item of pendingOperations) {
+        sendChain = sendChain.then(() => sendPending(item)).catch(() => {});
+      }
     }
+  } finally {
+    if (stillCurrent()) useLiveStore.getState().setTransfer(null);
   }
 }
 
@@ -1097,6 +1197,41 @@ export async function connectLiveWorkspace(packId: string): Promise<void> {
   setLiveWorkspaceTarget(packId);
   const task = bootstrapTask;
   if (task) await task;
+}
+
+/** Explicitly reloads the authoritative live snapshot. This replaces the old
+ * revision-only download action for realtime projects and also exposes its
+ * binary download progress in the existing cloud progress dialog. */
+export async function refreshLiveWorkspace(): Promise<number> {
+  const packId = targetPackId;
+  if (!packId || !targetSessionIsCurrent(packId)) {
+    throw new Error(i18n.t("sync:errors.notLinked"));
+  }
+  const runningBootstrap = bootstrapTask;
+  if (runningBootstrap) await runningBootstrap;
+  if (!targetSessionIsCurrent(packId)) {
+    throw new Error(i18n.t("sync:errors.projectChanged"));
+  }
+  const reportPull = liveProgress("pull");
+  useLiveStore.getState().setStatus("syncing");
+  reportPull({
+    phase: "download",
+    current: 0,
+    total: 1,
+    label: i18n.t("sync:progress.workspaceLoading"),
+  });
+  try {
+    const version = await fetchAndApplyWorkspace(reportPull);
+    if (version === null) throw new Error(i18n.t("sync:errors.notLinked"));
+    return version;
+  } catch (error) {
+    if (targetSessionIsCurrent(packId)) {
+      useLiveStore.getState().setStatus("error", errorMessage(error));
+    }
+    throw error;
+  } finally {
+    if (targetSessionIsCurrent(packId)) useLiveStore.getState().setTransfer(null);
+  }
 }
 
 /** Called by the collaboration WebSocket dispatcher. */

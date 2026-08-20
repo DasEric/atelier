@@ -5,6 +5,7 @@
   },
   "pull": {
     "success": "Rev {{revision}} geladen",
+    "liveSuccess": "Live-Projekt aktualisiert — v{{version}}",
     "downloaded_one": "{{count}} Datei heruntergeladen.",
     "downloaded_other": "{{count}} Datei(en) heruntergeladen.",
     "allLocal": "Alle Dateien waren bereits lokal vorhanden.",
@@ -62,6 +63,8 @@
     "done": "Fertig",
     "committing": "Revision wird erstellt…",
     "allLocal": "Alle Dateien sind bereits lokal vorhanden",
-    "downloadStarting": "Download startet…"
+    "downloadStarting": "Download startet…",
+    "workspaceLoading": "Live-Projekt wird geladen…",
+    "workspaceInitializing": "Live-Projekt wird erstellt…"
   }
 }

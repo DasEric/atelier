@@ -267,10 +267,13 @@ const PULL_PHASES: Array<{ id: SyncPhase; labelKey: string }> = [
 function SyncProgressDialog() {
   const { t } = useTranslation("workbench");
   const busy = useSyncStore((s) => s.busy);
-  const progress = useSyncStore((s) => s.progress);
-  if (!busy) return null;
+  const syncProgress = useSyncStore((s) => s.progress);
+  const liveTransfer = useLiveStore((s) => s.transfer);
+  const operation = liveTransfer?.direction ?? busy;
+  const progress = liveTransfer?.progress ?? syncProgress;
+  if (!operation) return null;
 
-  const phases = busy === "push" ? PUSH_PHASES : PULL_PHASES;
+  const phases = operation === "push" ? PUSH_PHASES : PULL_PHASES;
   const activeIndex = progress
     ? phases.findIndex((p) => p.id === progress.phase)
     : 0;
@@ -287,7 +290,7 @@ function SyncProgressDialog() {
       >
         <DialogHeader>
           <DialogTitle className="text-white">
-            {busy === "push"
+            {operation === "push"
               ? t("cloud.uploading")
               : t("cloud.loadingLatest")}
           </DialogTitle>
