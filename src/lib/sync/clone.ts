@@ -14,7 +14,8 @@
 import { exists } from "@tauri-apps/plugin-fs";
 import { joinPath, sanitizeFolderName } from "@/lib/project/io";
 import { createAndOpenProject } from "@/lib/project/session";
-import { linkProject, pullProject, type ProgressFn } from "@/lib/sync/pack-sync";
+import { linkProject, type ProgressFn } from "@/lib/sync/pack-sync";
+import { connectLiveWorkspace } from "@/lib/sync/live";
 import type { Pack } from "@/lib/sync/api-client";
 
 /** Picks `<parentDir>/<name>`, appending _1, _2, … until the folder is free. */
@@ -34,7 +35,7 @@ async function resolveCloneDir(parentDir: string, name: string): Promise<string>
 export async function clonePackToLocal(
   pack: Pack,
   parentDir: string,
-  onProgress?: ProgressFn,
+  _onProgress?: ProgressFn,
 ): Promise<string> {
   const targetDir = await resolveCloneDir(parentDir, pack.name);
 
@@ -46,11 +47,9 @@ export async function clonePackToLocal(
   // until the pull below sets it to the head revision).
   await linkProject(pack.packId);
 
-  // headRevision 0 = no revisions yet; the head manifest would 404, so we keep
-  // the freshly opened (empty) project as-is.
-  if (pack.headRevision > 0) {
-    await pullProject({ onProgress });
-  }
+  // Wait for the authoritative workspace (or its one-time revision bootstrap)
+  // so "clone finished" means every referenced binary is actually local.
+  await connectLiveWorkspace(pack.packId);
 
   return targetDir;
 }

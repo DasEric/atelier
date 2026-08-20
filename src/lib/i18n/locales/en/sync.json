@@ -50,6 +50,7 @@
   "errors": {
     "noProjectOpen": "No project open.",
     "notLinked": "This project is not linked to the cloud yet.",
+    "projectChanged": "Cloud sync was cancelled because a different project was opened in the meantime.",
     "fileMissing": "File missing locally: {{path}}",
     "fileDrifted": "“{{name}}” was modified outside atelier (hash mismatch). Please re-import the file.",
     "uploadHashFailed": "Upload of “{{name}}” failed (hash check). Please try again.",

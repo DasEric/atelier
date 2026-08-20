@@ -50,6 +50,7 @@
   "errors": {
     "noProjectOpen": "Kein Projekt geöffnet.",
     "notLinked": "Das Projekt ist noch nicht mit der Cloud verknüpft.",
+    "projectChanged": "Der Cloud-Abgleich wurde abgebrochen, weil inzwischen ein anderes Projekt geöffnet wurde.",
     "fileMissing": "Datei fehlt lokal: {{path}}",
     "fileDrifted": "„{{name}}“ wurde außerhalb von atelier verändert (Hash weicht ab). Bitte die Datei neu importieren.",
     "uploadHashFailed": "Upload von „{{name}}“ ist fehlgeschlagen (Hash-Prüfung). Bitte erneut versuchen.",
